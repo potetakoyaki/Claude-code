@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, ComposedChart, Bar
@@ -111,39 +111,53 @@ const SYMBOLS = {
   GOLD:   { name: "XAU/USD", unit: "USD", decimals: 2 },
 };
 
-// ===== Live Price Fetching =====
+// ===== Live Price Fetching (multiple sources with fallback) =====
 async function fetchLivePrices() {
   const results = { USDJPY: null, GOLD: null };
 
-  // Fetch USD/JPY from Frankfurter API (ECB rates, free, no key)
-  // https://frankfurter.dev/
-  const fxPromise = fetch("https://api.frankfurter.dev/v1/latest?base=USD&symbols=JPY")
-    .then(r => r.json())
-    .then(data => {
-      if (data?.rates?.JPY) {
-        results.USDJPY = { price: data.rates.JPY, source: "Frankfurter (ECB)" };
-      }
-    })
-    .catch(e => console.warn("Frankfurter API error:", e));
+  // --- USD/JPY: try multiple free APIs ---
+  const fxSources = [
+    // Frankfurter API (ECB rates)
+    () => fetch("https://api.frankfurter.dev/v1/latest?base=USD&symbols=JPY", { signal: AbortSignal.timeout(8000) })
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "ECB (Frankfurter)" } : null),
+    // Open Exchange Rates (free, no key for basic)
+    () => fetch("https://open.er-api.com/v6/latest/USD", { signal: AbortSignal.timeout(8000) })
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "ExchangeRate API" } : null),
+  ];
 
-  // Fetch Gold from metals.live API (free under 30k req/month, no key)
-  // https://api.metals.live/
-  const goldPromise = fetch("https://api.metals.live/v1/spot")
-    .then(r => r.json())
-    .then(data => {
-      // Response is array: [{"gold":PRICE},{"silver":PRICE},...,{"timestamp":N}]
-      if (Array.isArray(data)) {
-        for (const item of data) {
-          if (item.gold != null) {
-            results.GOLD = { price: item.gold, source: "metals.live" };
-            break;
+  for (const tryFx of fxSources) {
+    try {
+      const res = await tryFx();
+      if (res) { results.USDJPY = res; break; }
+    } catch (e) { console.warn("FX fetch attempt failed:", e.message); }
+  }
+
+  // --- Gold (XAU/USD): try multiple free APIs ---
+  const goldSources = [
+    // metals.live (free, no key under 30k req/month)
+    () => fetch("https://api.metals.live/v1/spot", { signal: AbortSignal.timeout(8000) })
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(data => {
+        if (Array.isArray(data)) {
+          for (const item of data) {
+            if (item.gold != null) return { price: item.gold, source: "metals.live" };
           }
         }
-      }
-    })
-    .catch(e => console.warn("metals.live API error:", e));
+        return null;
+      }),
+    // Frankfurter doesn't support gold, so use metals.dev as backup info
+    // If metals.live fails, we return null and fallback to cached data
+  ];
 
-  await Promise.allSettled([fxPromise, goldPromise]);
+  for (const tryGold of goldSources) {
+    try {
+      const res = await tryGold();
+      if (res) { results.GOLD = res; break; }
+    } catch (e) { console.warn("Gold fetch attempt failed:", e.message); }
+  }
+
   return results;
 }
 
@@ -460,14 +474,15 @@ export default function App() {
   const [tf, setTf] = useState("1d");
   const [panel, setPanel] = useState("price");
   const [livePrices, setLivePrices] = useState({});
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [fetchTime, setFetchTime] = useState(null);
   const [fetchError, setFetchError] = useState(null);
-  const hasFetched = useRef(false);
 
-  // Fetch live prices on mount
-  const doFetch = useCallback(async () => {
-    setLoading(true);
+  // Fetch live prices
+  const doFetch = useCallback(async (isInitial) => {
+    if (isInitial) setInitialLoading(true);
+    else setRefreshing(true);
     setFetchError(null);
     try {
       const prices = await fetchLivePrices();
@@ -483,27 +498,25 @@ export default function App() {
       console.error(e);
       setFetchError("Network error. Showing last known data.");
     }
-    setLoading(false);
+    if (isInitial) setInitialLoading(false);
+    else setRefreshing(false);
   }, []);
 
   useEffect(() => {
-    if (hasFetched.current) return;
-    hasFetched.current = true;
-    doFetch();
-  }, [doFetch]);
+    doFetch(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Get current data for the selected symbol and timeframe
+  // (ALL hooks must be called before any conditional return)
   const { chartData, signals, overall, bullish, bc, total, currentPrice, changePct, dayHigh, dayLow, liveSource } = useMemo(() => {
     const daily = DAILY_DATA[symbol];
     const lastDay = daily[daily.length - 1];
     const prevDay = daily.length > 1 ? daily[daily.length - 2] : lastDay;
 
-    // Use live price if available, otherwise fall back to hardcoded
     const live = livePrices[symbol];
     const price = live ? live.price : lastDay.c;
     const pct = ((price - prevDay.c) / prevDay.c) * 100;
 
-    // Update the last day's close with live price for chart accuracy
     let dailyWithLive = daily;
     if (live) {
       dailyWithLive = [...daily];
@@ -537,21 +550,6 @@ export default function App() {
   const sigColor = bullish ? "#2ecc71" : overall === "Neutral" ? "#888" : "#e74c3c";
   const sigBg = bullish ? "#0d2818" : overall === "Neutral" ? "#1a1a2e" : "#2d0a0a";
 
-  // ===== Loading Screen =====
-  if (loading) {
-    return (
-      <div style={{ background: "#0f0f23", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#eaeaea", fontFamily: "'Segoe UI',system-ui,sans-serif" }}>
-        <div style={{ position: "relative", width: 80, height: 80, marginBottom: 24 }}>
-          <div style={{ position: "absolute", inset: 0, border: "3px solid #2a2a4a", borderTop: "3px solid #e94560", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
-          <div style={{ position: "absolute", inset: 10, border: "3px solid #2a2a4a", borderBottom: "3px solid #3498db", borderRadius: "50%", animation: "spin 1.5s linear infinite reverse" }} />
-          <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-        </div>
-        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Fetching Live Prices...</div>
-        <div style={{ fontSize: 12, color: "#888" }}>USD/JPY & XAU/USD</div>
-      </div>
-    );
-  }
-
   // Multi-timeframe overview data
   const mtfSignals = useMemo(() => {
     const daily = DAILY_DATA[symbol];
@@ -572,6 +570,21 @@ export default function App() {
 
   const tfLabel = TIMEFRAMES.find(t => t.id === tf)?.label || tf;
 
+  // ===== Loading Screen (initial load only) =====
+  if (initialLoading) {
+    return (
+      <div style={{ background: "#0f0f23", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#eaeaea", fontFamily: "'Segoe UI',system-ui,sans-serif" }}>
+        <div style={{ position: "relative", width: 80, height: 80, marginBottom: 24 }}>
+          <div style={{ position: "absolute", inset: 0, border: "3px solid #2a2a4a", borderTop: "3px solid #e94560", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+          <div style={{ position: "absolute", inset: 10, border: "3px solid #2a2a4a", borderBottom: "3px solid #3498db", borderRadius: "50%", animation: "spin 1.5s linear infinite reverse" }} />
+          <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Fetching Live Prices...</div>
+        <div style={{ fontSize: 12, color: "#888" }}>USD/JPY & XAU/USD</div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ background: "#0f0f23", minHeight: "100vh", color: "#eaeaea", fontFamily: "'Segoe UI',system-ui,sans-serif", maxWidth: 480, margin: "0 auto" }}>
       {/* ===== Header ===== */}
@@ -590,11 +603,14 @@ export default function App() {
         {/* Price Display */}
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
           <div>
-            <div style={{ fontSize: 32, fontWeight: 900, color: "#fff", letterSpacing: "-0.5px" }}>{currentPrice.toFixed(2)}</div>
+            <div style={{ fontSize: 32, fontWeight: 900, color: "#fff", letterSpacing: "-0.5px" }}>
+              {currentPrice.toFixed(2)}
+              {refreshing && <span style={{ fontSize: 12, color: "#e94560", marginLeft: 8, verticalAlign: "middle" }}>...</span>}
+            </div>
             <div style={{ fontSize: 13, color: changePct >= 0 ? "#2ecc71" : "#e74c3c", fontWeight: 700 }}>
               {changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%
               <span style={{ color: "#666", fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
-                {fetchTime ? `${fetchTime}` : ""}
+                {fetchTime || ""}
               </span>
             </div>
             <div style={{ fontSize: 10, color: "#555", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
@@ -603,10 +619,10 @@ export default function App() {
               ) : (
                 <span style={{ color: "#f39c12" }}>Offline (cached data)</span>
               )}
-              <button onClick={() => { hasFetched.current = false; doFetch(); }} style={{
-                background: "none", border: "1px solid #555", borderRadius: 4, color: "#888", fontSize: 9,
-                padding: "1px 6px", cursor: "pointer",
-              }}>Refresh</button>
+              <button onClick={() => doFetch(false)} disabled={refreshing} style={{
+                background: "none", border: "1px solid #555", borderRadius: 4, color: refreshing ? "#444" : "#888", fontSize: 9,
+                padding: "1px 6px", cursor: refreshing ? "default" : "pointer",
+              }}>{refreshing ? "..." : "Refresh"}</button>
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
