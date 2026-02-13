@@ -107,9 +107,45 @@ const DAILY_DATA = {
 };
 
 const SYMBOLS = {
-  USDJPY: { name: "USD/JPY", search: "USD/JPY USDJPY forex", unit: "JPY", decimals: 2 },
-  GOLD:   { name: "XAU/USD", search: "gold XAU/USD price", unit: "USD", decimals: 0 },
+  USDJPY: { name: "USD/JPY", unit: "JPY", decimals: 2 },
+  GOLD:   { name: "XAU/USD", unit: "USD", decimals: 2 },
 };
+
+// ===== Live Price Fetching =====
+async function fetchLivePrices() {
+  const results = { USDJPY: null, GOLD: null };
+
+  // Fetch USD/JPY from Frankfurter API (ECB rates, free, no key)
+  // https://frankfurter.dev/
+  const fxPromise = fetch("https://api.frankfurter.dev/v1/latest?base=USD&symbols=JPY")
+    .then(r => r.json())
+    .then(data => {
+      if (data?.rates?.JPY) {
+        results.USDJPY = { price: data.rates.JPY, source: "Frankfurter (ECB)" };
+      }
+    })
+    .catch(e => console.warn("Frankfurter API error:", e));
+
+  // Fetch Gold from metals.live API (free under 30k req/month, no key)
+  // https://api.metals.live/
+  const goldPromise = fetch("https://api.metals.live/v1/spot")
+    .then(r => r.json())
+    .then(data => {
+      // Response is array: [{"gold":PRICE},{"silver":PRICE},...,{"timestamp":N}]
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item.gold != null) {
+            results.GOLD = { price: item.gold, source: "metals.live" };
+            break;
+          }
+        }
+      }
+    })
+    .catch(e => console.warn("metals.live API error:", e));
+
+  await Promise.allSettled([fxPromise, goldPromise]);
+  return results;
+}
 
 const TIMEFRAMES = [
   { id: "1d", label: "Daily",  short: "D",   minutes: 1440, barsPerDay: 1 },
@@ -423,20 +459,65 @@ export default function App() {
   const [symbol, setSymbol] = useState("USDJPY");
   const [tf, setTf] = useState("1d");
   const [panel, setPanel] = useState("price");
+  const [livePrices, setLivePrices] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [fetchTime, setFetchTime] = useState(null);
+  const [fetchError, setFetchError] = useState(null);
+  const hasFetched = useRef(false);
+
+  // Fetch live prices on mount
+  const doFetch = useCallback(async () => {
+    setLoading(true);
+    setFetchError(null);
+    try {
+      const prices = await fetchLivePrices();
+      const fetched = {};
+      if (prices.USDJPY) fetched.USDJPY = prices.USDJPY;
+      if (prices.GOLD) fetched.GOLD = prices.GOLD;
+      setLivePrices(fetched);
+      if (Object.keys(fetched).length === 0) {
+        setFetchError("Could not fetch live prices. Showing last known data.");
+      }
+      setFetchTime(new Date().toLocaleTimeString());
+    } catch (e) {
+      console.error(e);
+      setFetchError("Network error. Showing last known data.");
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (hasFetched.current) return;
+    hasFetched.current = true;
+    doFetch();
+  }, [doFetch]);
 
   // Get current data for the selected symbol and timeframe
-  const { chartData, signals, overall, bullish, bc, total, currentPrice, changePct, dayHigh, dayLow } = useMemo(() => {
+  const { chartData, signals, overall, bullish, bc, total, currentPrice, changePct, dayHigh, dayLow, liveSource } = useMemo(() => {
     const daily = DAILY_DATA[symbol];
     const lastDay = daily[daily.length - 1];
     const prevDay = daily.length > 1 ? daily[daily.length - 2] : lastDay;
-    const price = lastDay.c;
-    const pct = ((lastDay.c - prevDay.c) / prevDay.c) * 100;
+
+    // Use live price if available, otherwise fall back to hardcoded
+    const live = livePrices[symbol];
+    const price = live ? live.price : lastDay.c;
+    const pct = ((price - prevDay.c) / prevDay.c) * 100;
+
+    // Update the last day's close with live price for chart accuracy
+    let dailyWithLive = daily;
+    if (live) {
+      dailyWithLive = [...daily];
+      const last = { ...dailyWithLive[dailyWithLive.length - 1], c: price };
+      last.h = Math.max(last.h, price);
+      last.l = Math.min(last.l, price);
+      dailyWithLive[dailyWithLive.length - 1] = last;
+    }
 
     let rawForChart;
     if (tf === "1d") {
-      rawForChart = daily;
+      rawForChart = dailyWithLive;
     } else {
-      rawForChart = generateIntradayBars(daily, tf) || daily;
+      rawForChart = generateIntradayBars(dailyWithLive, tf) || dailyWithLive;
     }
 
     const cd = buildChartData(rawForChart);
@@ -447,13 +528,29 @@ export default function App() {
       ...analysis,
       currentPrice: price,
       changePct: pct,
-      dayHigh: lastDay.h,
-      dayLow: lastDay.l,
+      dayHigh: live ? Math.max(lastDay.h, price) : lastDay.h,
+      dayLow: live ? Math.min(lastDay.l, price) : lastDay.l,
+      liveSource: live?.source || null,
     };
-  }, [symbol, tf]);
+  }, [symbol, tf, livePrices]);
 
   const sigColor = bullish ? "#2ecc71" : overall === "Neutral" ? "#888" : "#e74c3c";
   const sigBg = bullish ? "#0d2818" : overall === "Neutral" ? "#1a1a2e" : "#2d0a0a";
+
+  // ===== Loading Screen =====
+  if (loading) {
+    return (
+      <div style={{ background: "#0f0f23", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#eaeaea", fontFamily: "'Segoe UI',system-ui,sans-serif" }}>
+        <div style={{ position: "relative", width: 80, height: 80, marginBottom: 24 }}>
+          <div style={{ position: "absolute", inset: 0, border: "3px solid #2a2a4a", borderTop: "3px solid #e94560", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+          <div style={{ position: "absolute", inset: 10, border: "3px solid #2a2a4a", borderBottom: "3px solid #3498db", borderRadius: "50%", animation: "spin 1.5s linear infinite reverse" }} />
+          <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Fetching Live Prices...</div>
+        <div style={{ fontSize: 12, color: "#888" }}>USD/JPY & XAU/USD</div>
+      </div>
+    );
+  }
 
   // Multi-timeframe overview data
   const mtfSignals = useMemo(() => {
@@ -496,6 +593,20 @@ export default function App() {
             <div style={{ fontSize: 32, fontWeight: 900, color: "#fff", letterSpacing: "-0.5px" }}>{currentPrice.toFixed(2)}</div>
             <div style={{ fontSize: 13, color: changePct >= 0 ? "#2ecc71" : "#e74c3c", fontWeight: 700 }}>
               {changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%
+              <span style={{ color: "#666", fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
+                {fetchTime ? `${fetchTime}` : ""}
+              </span>
+            </div>
+            <div style={{ fontSize: 10, color: "#555", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
+              {liveSource ? (
+                <><span style={{ color: "#2ecc71" }}>LIVE</span> via {liveSource}</>
+              ) : (
+                <span style={{ color: "#f39c12" }}>Offline (cached data)</span>
+              )}
+              <button onClick={() => { hasFetched.current = false; doFetch(); }} style={{
+                background: "none", border: "1px solid #555", borderRadius: 4, color: "#888", fontSize: 9,
+                padding: "1px 6px", cursor: "pointer",
+              }}>Refresh</button>
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
@@ -511,6 +622,10 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {fetchError && (
+        <div style={{ margin: "0 12px", padding: "6px 10px", background: "#2d1f00", borderRadius: 6, fontSize: 11, color: "#f39c12" }}>{fetchError}</div>
+      )}
 
       {/* ===== Timeframe Selector ===== */}
       <div style={{ display: "flex", gap: 3, padding: "8px 8px 4px", background: "#0f0f23" }}>
