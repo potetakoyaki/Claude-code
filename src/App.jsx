@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, ComposedChart, Bar
@@ -107,7 +107,7 @@ const DAILY_DATA = {
 };
 
 const SYMBOLS = {
-  USDJPY: { name: "USD/JPY", unit: "JPY", decimals: 2 },
+  USDJPY: { name: "USD/JPY", unit: "JPY", decimals: 3 },
   GOLD:   { name: "XAU/USD", unit: "USD", decimals: 2 },
 };
 
@@ -115,8 +115,16 @@ const SYMBOLS = {
 async function fetchLivePrices() {
   const results = { USDJPY: null, GOLD: null };
 
+  const withNoCache = (url) => {
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}_=${Date.now()}`;
+  };
+
   const tryFetchJson = async (url) => {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const res = await fetch(withNoCache(url), {
+      signal: AbortSignal.timeout(8000),
+      cache: "no-store",
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   };
@@ -133,6 +141,9 @@ async function fetchLivePrices() {
 
   // --- USD/JPY: try multiple free APIs ---
   const fxSources = [
+    // Fast FX rate API (frequent updates)
+    () => fetchJsonWithCorsFallback("https://api.fxratesapi.com/latest?base=USD&currencies=JPY")
+      .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "fxratesapi.com" } : null),
     // Frankfurter API (ECB rates)
     () => fetchJsonWithCorsFallback("https://api.frankfurter.app/latest?from=USD&to=JPY")
       .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "ECB (Frankfurter)" } : null),
@@ -500,9 +511,12 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [fetchTime, setFetchTime] = useState(null);
   const [fetchError, setFetchError] = useState(null);
+  const fetchingRef = useRef(false);
 
   // Fetch live prices
   const doFetch = useCallback(async (isInitial) => {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
     if (isInitial) setInitialLoading(true);
     else setRefreshing(true);
     setFetchError(null);
@@ -519,9 +533,11 @@ export default function App() {
     } catch (e) {
       console.error(e);
       setFetchError("Network error. Showing last known data.");
+    } finally {
+      fetchingRef.current = false;
+      if (isInitial) setInitialLoading(false);
+      else setRefreshing(false);
     }
-    if (isInitial) setInitialLoading(false);
-    else setRefreshing(false);
   }, []);
 
   useEffect(() => {
@@ -599,6 +615,7 @@ export default function App() {
   }, [symbol]);
 
   const tfLabel = TIMEFRAMES.find(t => t.id === tf)?.label || tf;
+  const decimals = SYMBOLS[symbol]?.decimals ?? 2;
 
   // ===== Loading Screen (initial load only) =====
   if (initialLoading) {
@@ -617,6 +634,11 @@ export default function App() {
 
   return (
     <div style={{ background: "#0f0f23", minHeight: "100vh", color: "#eaeaea", fontFamily: "'Segoe UI',system-ui,sans-serif", maxWidth: 480, margin: "0 auto" }}>
+      {/* ===== Top Sticky Chart (always visible) ===== */}
+      <div style={{ position: "sticky", top: 0, zIndex: 20, background: "#0f0f23", boxShadow: "0 3px 12px #0008" }}>
+        <ChartPanel chartData={chartData} panel={panel} setPanel={setPanel} tfLabel={tfLabel} />
+      </div>
+
       {/* ===== Header ===== */}
       <div style={{ background: "linear-gradient(135deg,#1a1a2e,#16213e)", padding: "14px 14px 10px", borderBottom: "2px solid #e94560" }}>
         {/* Symbol Buttons */}
@@ -634,7 +656,7 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontSize: 32, fontWeight: 900, color: "#fff", letterSpacing: "-0.5px" }}>
-              {currentPrice.toFixed(2)}
+              {currentPrice.toFixed(decimals)}
               {refreshing && <span style={{ fontSize: 12, color: "#e94560", marginLeft: 8, verticalAlign: "middle" }}>...</span>}
             </div>
             <div style={{ fontSize: 13, color: changePct >= 0 ? "#2ecc71" : "#e74c3c", fontWeight: 700 }}>
@@ -682,9 +704,6 @@ export default function App() {
           }}>{t.short}</button>
         ))}
       </div>
-
-      {/* ===== Chart Panel (works for ALL timeframes) ===== */}
-      <ChartPanel chartData={chartData} panel={panel} setPanel={setPanel} tfLabel={tfLabel} />
 
       {/* ===== Multi-Timeframe Overview ===== */}
       <div style={{ padding: "8px 12px" }}>
@@ -737,11 +756,11 @@ export default function App() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
             <div style={{ background: "#16213e", borderRadius: 10, padding: "12px 14px", borderLeft: "3px solid #2ecc71" }}>
               <div style={{ fontSize: 10, color: "#888" }}>Day Low (Support)</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: "#2ecc71" }}>{dayLow.toFixed(2)}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#2ecc71" }}>{dayLow.toFixed(decimals)}</div>
             </div>
             <div style={{ background: "#16213e", borderRadius: 10, padding: "12px 14px", borderLeft: "3px solid #e74c3c" }}>
               <div style={{ fontSize: 10, color: "#888" }}>Day High (Resistance)</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: "#e74c3c" }}>{dayHigh.toFixed(2)}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#e74c3c" }}>{dayHigh.toFixed(decimals)}</div>
             </div>
           </div>
         </div>
@@ -750,7 +769,7 @@ export default function App() {
       {/* Footer */}
       <div style={{ textAlign: "center", padding: "10px", color: "#444", fontSize: 10, borderTop: "1px solid #1a1a2e" }}>
         This is for reference only, not investment advice.
-        <span> | H: {dayHigh.toFixed(2)} L: {dayLow.toFixed(2)}</span>
+        <span> | H: {dayHigh.toFixed(decimals)} L: {dayLow.toFixed(decimals)}</span>
       </div>
     </div>
   );
