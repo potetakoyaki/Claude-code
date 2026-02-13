@@ -115,16 +115,33 @@ const SYMBOLS = {
 async function fetchLivePrices() {
   const results = { USDJPY: null, GOLD: null };
 
+  const tryFetchJson = async (url) => {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  };
+
+  const fetchJsonWithCorsFallback = async (url) => {
+    try {
+      return await tryFetchJson(url);
+    } catch {
+      // Fallback for APIs that may block browser CORS in some environments
+      const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+      return tryFetchJson(proxy);
+    }
+  };
+
   // --- USD/JPY: try multiple free APIs ---
   const fxSources = [
     // Frankfurter API (ECB rates)
-    () => fetch("https://api.frankfurter.dev/v1/latest?base=USD&symbols=JPY", { signal: AbortSignal.timeout(8000) })
-      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    () => fetchJsonWithCorsFallback("https://api.frankfurter.app/latest?from=USD&to=JPY")
       .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "ECB (Frankfurter)" } : null),
-    // Open Exchange Rates (free, no key for basic)
-    () => fetch("https://open.er-api.com/v6/latest/USD", { signal: AbortSignal.timeout(8000) })
-      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    // Open Exchange Rates mirror (free)
+    () => fetchJsonWithCorsFallback("https://open.er-api.com/v6/latest/USD")
       .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "ExchangeRate API" } : null),
+    // Fawaz Ahmed currency API (free)
+    () => fetchJsonWithCorsFallback("https://latest.currency-api.pages.dev/v1/currencies/usd.json")
+      .then(data => data?.usd?.jpy ? { price: data.usd.jpy, source: "currency-api.pages.dev" } : null),
   ];
 
   for (const tryFx of fxSources) {
@@ -136,9 +153,14 @@ async function fetchLivePrices() {
 
   // --- Gold (XAU/USD): try multiple free APIs ---
   const goldSources = [
+    // gold-api.com (free endpoint)
+    () => fetchJsonWithCorsFallback("https://api.gold-api.com/price/XAU")
+      .then(data => {
+        const p = data?.price;
+        return Number.isFinite(p) ? { price: p, source: "gold-api.com" } : null;
+      }),
     // metals.live (free, no key under 30k req/month)
-    () => fetch("https://api.metals.live/v1/spot", { signal: AbortSignal.timeout(8000) })
-      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    () => fetchJsonWithCorsFallback("https://api.metals.live/v1/spot")
       .then(data => {
         if (Array.isArray(data)) {
           for (const item of data) {
@@ -505,6 +527,14 @@ export default function App() {
   useEffect(() => {
     doFetch(true);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Periodic live refresh
+  useEffect(() => {
+    const id = setInterval(() => {
+      doFetch(false);
+    }, 30000);
+    return () => clearInterval(id);
+  }, [doFetch]);
 
   // Get current data for the selected symbol and timeframe
   // (ALL hooks must be called before any conditional return)
