@@ -732,6 +732,14 @@ export default function App() {
     return () => clearInterval(id);
   }, [doFetch]);
 
+  // Periodic live refresh
+  useEffect(() => {
+    const id = setInterval(() => {
+      doFetch(false);
+    }, 30000);
+    return () => clearInterval(id);
+  }, [doFetch]);
+
   // Get current data for the selected symbol and timeframe
   // (ALL hooks must be called before any conditional return)
   const { chartData, signals, overall, bullish, bc, total, currentPrice, changePct, dayHigh, dayLow, liveSource } = useMemo(() => {
