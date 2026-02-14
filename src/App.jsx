@@ -107,13 +107,26 @@ const DAILY_DATA = {
 };
 
 const SYMBOLS = {
-  USDJPY: { name: "USD/JPY", unit: "JPY", decimals: 3 },
-  GOLD:   { name: "XAU/USD", unit: "USD", decimals: 2 },
+  USDJPY: { name: "USD/JPY", unit: "JPY", decimals: 3, type: "fx", base: "USD", quote: "JPY", stooq: "usdjpy" },
+  EURUSD: { name: "EUR/USD", unit: "USD", decimals: 5, type: "fx", base: "EUR", quote: "USD", stooq: "eurusd" },
+  GBPUSD: { name: "GBP/USD", unit: "USD", decimals: 5, type: "fx", base: "GBP", quote: "USD", stooq: "gbpusd" },
+  AUDUSD: { name: "AUD/USD", unit: "USD", decimals: 5, type: "fx", base: "AUD", quote: "USD", stooq: "audusd" },
+  USDCAD: { name: "USD/CAD", unit: "CAD", decimals: 5, type: "fx", base: "USD", quote: "CAD", stooq: "usdcad" },
+  GOLD:   { name: "XAU/USD", unit: "USD", decimals: 2, type: "metal", base: "XAU", quote: "USD", stooq: "xauusd" },
+};
+
+const MARKET_DATA = {
+  ...DAILY_DATA,
+  EURUSD: DAILY_DATA.USDJPY.map(x => ({ ...x, o: +(x.o / 120).toFixed(5), h: +(x.h / 120).toFixed(5), l: +(x.l / 120).toFixed(5), c: +(x.c / 120).toFixed(5) })),
+  GBPUSD: DAILY_DATA.USDJPY.map(x => ({ ...x, o: +(x.o / 100).toFixed(5), h: +(x.h / 100).toFixed(5), l: +(x.l / 100).toFixed(5), c: +(x.c / 100).toFixed(5) })),
+  AUDUSD: DAILY_DATA.USDJPY.map(x => ({ ...x, o: +(x.o / 220).toFixed(5), h: +(x.h / 220).toFixed(5), l: +(x.l / 220).toFixed(5), c: +(x.c / 220).toFixed(5) })),
+  USDCAD: DAILY_DATA.USDJPY.map(x => ({ ...x, o: +(x.o / 115).toFixed(5), h: +(x.h / 115).toFixed(5), l: +(x.l / 115).toFixed(5), c: +(x.c / 115).toFixed(5) })),
 };
 
 // ===== Live Price Fetching (multiple sources with fallback) =====
-async function fetchLivePrices() {
-  const results = { USDJPY: null, GOLD: null };
+async function fetchLivePrice(symbol) {
+  const cfg = SYMBOLS[symbol];
+  if (!cfg) return null;
 
   const withNoCache = (url) => {
     const sep = url.includes("?") ? "&" : "?";
@@ -139,31 +152,38 @@ async function fetchLivePrices() {
     }
   };
 
-  // --- USD/JPY: try multiple free APIs ---
-  const fxSources = [
-    // Fast FX rate API (frequent updates)
-    () => fetchJsonWithCorsFallback("https://api.fxratesapi.com/latest?base=USD&currencies=JPY")
-      .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "fxratesapi.com" } : null),
-    // Frankfurter API (ECB rates)
-    () => fetchJsonWithCorsFallback("https://api.frankfurter.app/latest?from=USD&to=JPY")
-      .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "ECB (Frankfurter)" } : null),
-    // Open Exchange Rates mirror (free)
-    () => fetchJsonWithCorsFallback("https://open.er-api.com/v6/latest/USD")
-      .then(data => data?.rates?.JPY ? { price: data.rates.JPY, source: "ExchangeRate API" } : null),
-    // Fawaz Ahmed currency API (free)
-    () => fetchJsonWithCorsFallback("https://latest.currency-api.pages.dev/v1/currencies/usd.json")
-      .then(data => data?.usd?.jpy ? { price: data.usd.jpy, source: "currency-api.pages.dev" } : null),
-  ];
-
-  for (const tryFx of fxSources) {
-    try {
-      const res = await tryFx();
-      if (res) { results.USDJPY = res; break; }
-    } catch (e) { console.warn("FX fetch attempt failed:", e.message); }
+  if (cfg.type === "fx") {
+    const b = cfg.base;
+    const q = cfg.quote;
+    const fxSources = [
+      () => fetchJsonWithCorsFallback(`https://api.fxratesapi.com/latest?base=${b}&currencies=${q}`)
+        .then(data => data?.rates?.[q] ? { price: data.rates[q], source: "fxratesapi.com" } : null),
+      () => fetchJsonWithCorsFallback(`https://api.frankfurter.app/latest?from=${b}&to=${q}`)
+        .then(data => data?.rates?.[q] ? { price: data.rates[q], source: "ECB (Frankfurter)" } : null),
+      () => fetchJsonWithCorsFallback(`https://latest.currency-api.pages.dev/v1/currencies/${b.toLowerCase()}.json`)
+        .then(data => data?.[b.toLowerCase()]?.[q.toLowerCase()] ? { price: data[b.toLowerCase()][q.toLowerCase()], source: "currency-api.pages.dev" } : null),
+      () => fetchJsonWithCorsFallback("https://open.er-api.com/v6/latest/USD")
+        .then(data => {
+          if (!data?.rates) return null;
+          if (b === "USD" && data.rates[q]) return { price: data.rates[q], source: "ExchangeRate API" };
+          if (q === "USD" && data.rates[b]) return { price: 1 / data.rates[b], source: "ExchangeRate API" };
+          return null;
+        }),
+    ];
+    for (const tryFx of fxSources) {
+      try {
+        const res = await tryFx();
+        if (res) return res;
+      } catch (e) { console.warn("FX fetch attempt failed:", e.message); }
+    }
+    return null;
   }
 
   // --- Gold (XAU/USD): try multiple free APIs ---
   const goldSources = [
+    // FX rates API often includes XAU quote against USD
+    () => fetchJsonWithCorsFallback("https://api.fxratesapi.com/latest?base=XAU&currencies=USD")
+      .then(data => data?.rates?.USD ? { price: data.rates.USD, source: "fxratesapi.com (XAU)" } : null),
     // gold-api.com (free endpoint)
     () => fetchJsonWithCorsFallback("https://api.gold-api.com/price/XAU")
       .then(data => {
@@ -187,11 +207,57 @@ async function fetchLivePrices() {
   for (const tryGold of goldSources) {
     try {
       const res = await tryGold();
-      if (res) { results.GOLD = res; break; }
+      if (res) return res;
     } catch (e) { console.warn("Gold fetch attempt failed:", e.message); }
   }
+  return null;
+}
 
-  return results;
+// ===== Daily OHLC fetching for chart alignment =====
+async function fetchDailyOhlc(symbol) {
+  const stooqSymbol = SYMBOLS[symbol]?.stooq;
+  if (!stooqSymbol) return null;
+  const rawUrl = `https://stooq.com/q/d/l/?s=${stooqSymbol}&i=d`;
+  const withNoCache = (url) => {
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}_=${Date.now()}`;
+  };
+
+  const parseCsv = (csvText) => {
+    const lines = csvText.trim().split("\n");
+    if (lines.length < 3) return null;
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const [date, open, high, low, close] = lines[i].split(",");
+      if (!date || !open || !high || !low || !close) continue;
+      const [y, m, d] = date.split("-");
+      const o = Number(open), h = Number(high), l = Number(low), c = Number(close);
+      if (![o, h, l, c].every(Number.isFinite)) continue;
+      rows.push({ d: `${m}/${d}`, o, h, l, c, y });
+    }
+    if (rows.length < 20) return null;
+    return rows.slice(-140);
+  };
+
+  const tryText = async (url) => {
+    const res = await fetch(withNoCache(url), { signal: AbortSignal.timeout(10000), cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  };
+
+  try {
+    const csv = await tryText(rawUrl);
+    const parsed = parseCsv(csv);
+    if (parsed) return parsed;
+  } catch {}
+
+  try {
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(rawUrl)}`;
+    const csv = await tryText(proxyUrl);
+    return parseCsv(csv);
+  } catch {
+    return null;
+  }
 }
 
 const TIMEFRAMES = [
@@ -359,24 +425,132 @@ function analyzeSignals(data) {
   const P = data.length > 1 ? data[data.length - 2] : L;
   const s = [];
   if (L.sma20 && L.sma50)
-    s.push({ n: "SMA 20/50", v: L.sma20 > L.sma50 ? "Golden Cross" : "Dead Cross", b: L.sma20 > L.sma50 });
+    s.push({ n: "SMA20/50", v: L.sma20 > L.sma50 ? "Golden Cross" : "Dead Cross", b: L.sma20 > L.sma50, w: 1.2 });
+  if (L.ema12 && L.sma20)
+    s.push({ n: "EMA12 vs SMA20", v: L.ema12 > L.sma20 ? "Uptrend" : "Downtrend", b: L.ema12 > L.sma20, w: 1.0 });
   if (L.sma20)
-    s.push({ n: "Price vs SMA20", v: L.price > L.sma20 ? "Above" : "Below", b: L.price > L.sma20 });
+    s.push({ n: "Price vs SMA20", v: L.price > L.sma20 ? "Above" : "Below", b: L.price > L.sma20, w: 1.2 });
   if (L.rsi !== null) {
-    const lb = L.rsi > 70 ? "Overbought" : L.rsi < 30 ? "Oversold" : L.rsi > 50 ? "Bull" : "Bear";
-    s.push({ n: "RSI(14)", v: `${L.rsi} ${lb}`, b: L.rsi > 40 && L.rsi <= 70 });
+    const lb = L.rsi > 70 ? "Overbought" : L.rsi < 30 ? "Oversold" : L.rsi >= 50 ? "Bullish" : "Bearish";
+    s.push({ n: "RSI(14)", v: `${L.rsi} ${lb}`, b: L.rsi >= 48 && L.rsi <= 72, w: 1.0 });
   }
-  s.push({ n: "MACD", v: L.macd > L.sig ? "Bullish" : "Bearish", b: L.macd > L.sig });
-  s.push({ n: "Momentum", v: L.hist > P.hist ? "Increasing" : "Decreasing", b: L.hist > P.hist });
+  s.push({ n: "MACD", v: L.macd > L.sig ? "Bullish" : "Bearish", b: L.macd > L.sig, w: 1.5 });
+  s.push({ n: "Momentum", v: L.hist > P.hist ? "Increasing" : "Decreasing", b: L.hist > P.hist, w: 1.0 });
   if (L.bbU && L.bbL)
     s.push({
       n: "Bollinger",
       v: L.price > L.bbU ? "Upper Break" : L.price < L.bbL ? "Lower Break" : L.price > L.bbM ? "Upper Half" : "Lower Half",
       b: L.price > L.bbM,
+      w: 0.8,
     });
+  const totalW = s.reduce((a, x) => a + (x.w ?? 1), 0);
+  const bullW = s.filter(x => x.b).reduce((a, x) => a + (x.w ?? 1), 0);
+  const score = totalW > 0 ? bullW / totalW : 0.5;
   const bc = s.filter(x => x.b).length;
-  const ov = bc >= 5 ? "Strong Buy" : bc >= 4 ? "Buy" : bc <= 1 ? "Strong Sell" : bc <= 2 ? "Sell" : "Neutral";
+  const ov = score >= 0.72 ? "Strong Buy" : score >= 0.58 ? "Buy" : score <= 0.28 ? "Strong Sell" : score <= 0.42 ? "Sell" : "Neutral";
   return { signals: s, overall: ov, bullish: bc > s.length / 2, bc, total: s.length };
+}
+
+function detectRegime(data, i) {
+  if (i < 20) return "レンジ";
+  const now = data[i].price;
+  const prev = data[i - 20].price;
+  const r = (now - prev) / prev;
+  if (r > 0.02) return "Uptrend";
+  if (r < -0.02) return "Downtrend";
+  return "Range";
+}
+
+function summarizeTrades(trades, bars) {
+  const count = trades.length;
+  const wins = trades.filter(t => t.ret > 0).length;
+  const losses = count - wins;
+  const grossProfit = trades.filter(t => t.ret > 0).reduce((a, t) => a + t.ret, 0);
+  const grossLoss = trades.filter(t => t.ret <= 0).reduce((a, t) => a + t.ret, 0);
+  let equity = 1;
+  let peak = 1;
+  let maxDD = 0;
+  for (const t of trades) {
+    equity *= (1 + t.ret);
+    peak = Math.max(peak, equity);
+    maxDD = Math.max(maxDD, (peak - equity) / peak);
+  }
+  const avg = count ? trades.reduce((a, t) => a + t.ret, 0) / count : 0;
+  const std = count > 1
+    ? Math.sqrt(trades.reduce((a, t) => a + (t.ret - avg) ** 2, 0) / (count - 1))
+    : 0;
+  const sharpe = std > 0 ? (avg / std) * Math.sqrt(count) : 0;
+  const years = Math.max(bars / 252, 0.1);
+  const cagr = Math.pow(Math.max(equity, 0.0001), 1 / years) - 1;
+  const pf = grossLoss < 0 ? grossProfit / Math.abs(grossLoss) : grossProfit > 0 ? 99 : 0;
+  const mar = maxDD > 0 ? cagr / maxDD : 0;
+  return {
+    trades: count,
+    wins,
+    losses,
+    winRate: count ? (wins / count) * 100 : 0,
+    totalReturn: (equity - 1) * 100,
+    maxDD: maxDD * 100,
+    pf,
+    sharpe,
+    mar,
+  };
+}
+
+function runBacktest(data, opts = {}) {
+  if (!data || data.length < 80) return null;
+  const warmup = 60;
+  const splitIdx = Math.max(warmup + 1, Math.floor(data.length * 0.7));
+  const feeRate = opts.feeRate ?? 0.0004;
+  const spreadRate = opts.spreadRate ?? 0.0006;
+  const slippageRate = opts.slippageRate ?? 0.0004;
+  const roundTripCost = feeRate + spreadRate + slippageRate;
+
+  let pos = null;
+  const allTrades = [];
+
+  for (let i = warmup; i < data.length; i++) {
+    const hist = data.slice(0, i + 1);
+    const { overall } = analyzeSignals(hist);
+    const price = hist[hist.length - 1].price;
+    const longSignal = overall === "Buy" || overall === "Strong Buy";
+    const shortSignal = overall === "Sell" || overall === "Strong Sell";
+
+    if (!pos && (longSignal || shortSignal)) {
+      pos = { side: longSignal ? "long" : "short", entry: price, idx: i };
+      continue;
+    }
+
+    if (!pos) continue;
+    const shouldFlip = (pos.side === "long" && shortSignal) || (pos.side === "short" && longSignal);
+    if (!shouldFlip) continue;
+
+    const gross = pos.side === "long" ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry;
+    const ret = gross - roundTripCost;
+    allTrades.push({
+      ret,
+      exitIdx: i,
+      regime: detectRegime(data, i),
+      segment: i < splitIdx ? "Train" : "Test",
+      side: pos.side,
+    });
+    pos = { side: longSignal ? "long" : "short", entry: price, idx: i };
+  }
+
+  const trainTrades = allTrades.filter(t => t.segment === "Train");
+  const testTrades = allTrades.filter(t => t.segment === "Test");
+  const regimeMap = {};
+  for (const rg of ["Uptrend", "Downtrend", "Range"]) {
+    regimeMap[rg] = summarizeTrades(allTrades.filter(t => t.regime === rg), data.length);
+  }
+
+  return {
+    costs: { feeRate, spreadRate, slippageRate, roundTripCost },
+    overall: summarizeTrades(allTrades, data.length),
+    train: summarizeTrades(trainTrades, Math.max(splitIdx, 1)),
+    test: summarizeTrades(testTrades, Math.max(data.length - splitIdx, 1)),
+    regime: regimeMap,
+  };
 }
 
 // ===== Tooltip =====
@@ -507,6 +681,7 @@ export default function App() {
   const [tf, setTf] = useState("1d");
   const [panel, setPanel] = useState("price");
   const [livePrices, setLivePrices] = useState({});
+  const [dailyDataMap, setDailyDataMap] = useState(MARKET_DATA);
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchTime, setFetchTime] = useState(null);
@@ -521,13 +696,18 @@ export default function App() {
     else setRefreshing(true);
     setFetchError(null);
     try {
-      const prices = await fetchLivePrices();
-      const fetched = {};
-      if (prices.USDJPY) fetched.USDJPY = prices.USDJPY;
-      if (prices.GOLD) fetched.GOLD = prices.GOLD;
-      setLivePrices(fetched);
-      if (Object.keys(fetched).length === 0) {
-        setFetchError("Could not fetch live prices. Showing last known data.");
+      const [live, daily] = await Promise.all([
+        fetchLivePrice(symbol),
+        fetchDailyOhlc(symbol),
+      ]);
+      if (live) {
+        setLivePrices(prev => ({ ...prev, [symbol]: live }));
+      }
+      if (daily) {
+        setDailyDataMap(prev => ({ ...prev, [symbol]: daily }));
+      }
+      if (!live || !daily) {
+        setFetchError("Some live sources are unavailable. Showing latest available data.");
       }
       setFetchTime(new Date().toLocaleTimeString());
     } catch (e) {
@@ -538,11 +718,19 @@ export default function App() {
       if (isInitial) setInitialLoading(false);
       else setRefreshing(false);
     }
-  }, []);
+  }, [symbol]);
 
   useEffect(() => {
     doFetch(true);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [doFetch]);
+
+  // Periodic live refresh
+  useEffect(() => {
+    const id = setInterval(() => {
+      doFetch(false);
+    }, 30000);
+    return () => clearInterval(id);
+  }, [doFetch]);
 
   // Periodic live refresh
   useEffect(() => {
@@ -555,7 +743,7 @@ export default function App() {
   // Get current data for the selected symbol and timeframe
   // (ALL hooks must be called before any conditional return)
   const { chartData, signals, overall, bullish, bc, total, currentPrice, changePct, dayHigh, dayLow, liveSource } = useMemo(() => {
-    const daily = DAILY_DATA[symbol];
+    const daily = dailyDataMap[symbol] || MARKET_DATA[symbol];
     const lastDay = daily[daily.length - 1];
     const prevDay = daily.length > 1 ? daily[daily.length - 2] : lastDay;
 
@@ -566,10 +754,23 @@ export default function App() {
     let dailyWithLive = daily;
     if (live) {
       dailyWithLive = [...daily];
-      const last = { ...dailyWithLive[dailyWithLive.length - 1], c: price };
-      last.h = Math.max(last.h, price);
-      last.l = Math.min(last.l, price);
-      dailyWithLive[dailyWithLive.length - 1] = last;
+      const now = new Date();
+      const todayLabel = `${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")}`;
+      const latest = dailyWithLive[dailyWithLive.length - 1];
+      if (latest?.d === todayLabel) {
+        const updated = { ...latest, c: price };
+        updated.h = Math.max(updated.h, price);
+        updated.l = Math.min(updated.l, price);
+        dailyWithLive[dailyWithLive.length - 1] = updated;
+      } else {
+        dailyWithLive.push({
+          d: todayLabel,
+          o: latest?.c ?? price,
+          h: Math.max(latest?.c ?? price, price),
+          l: Math.min(latest?.c ?? price, price),
+          c: price,
+        });
+      }
     }
 
     let rawForChart;
@@ -591,14 +792,14 @@ export default function App() {
       dayLow: live ? Math.min(lastDay.l, price) : lastDay.l,
       liveSource: live?.source || null,
     };
-  }, [symbol, tf, livePrices]);
+  }, [symbol, tf, livePrices, dailyDataMap]);
 
   const sigColor = bullish ? "#2ecc71" : overall === "Neutral" ? "#888" : "#e74c3c";
   const sigBg = bullish ? "#0d2818" : overall === "Neutral" ? "#1a1a2e" : "#2d0a0a";
 
   // Multi-timeframe overview data
   const mtfSignals = useMemo(() => {
-    const daily = DAILY_DATA[symbol];
+    const daily = dailyDataMap[symbol] || MARKET_DATA[symbol];
     const results = {};
     for (const t of TIMEFRAMES) {
       let raw;
@@ -612,10 +813,19 @@ export default function App() {
       results[t.id] = analysis;
     }
     return results;
-  }, [symbol]);
+  }, [symbol, dailyDataMap]);
 
   const tfLabel = TIMEFRAMES.find(t => t.id === tf)?.label || tf;
   const decimals = SYMBOLS[symbol]?.decimals ?? 2;
+  const backtest = useMemo(() => runBacktest(chartData), [chartData]);
+  const multiSymbolBacktest = useMemo(() => {
+    const bySymbol = {};
+    for (const key of Object.keys(SYMBOLS)) {
+      const daily = dailyDataMap[key] || MARKET_DATA[key];
+      bySymbol[key] = runBacktest(buildChartData(daily));
+    }
+    return bySymbol;
+  }, [dailyDataMap]);
 
   // ===== Loading Screen (initial load only) =====
   if (initialLoading) {
@@ -626,7 +836,7 @@ export default function App() {
           <div style={{ position: "absolute", inset: 10, border: "3px solid #2a2a4a", borderBottom: "3px solid #3498db", borderRadius: "50%", animation: "spin 1.5s linear infinite reverse" }} />
           <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
         </div>
-        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Fetching Live Prices...</div>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>価格データ取得中...</div>
         <div style={{ fontSize: 12, color: "#888" }}>USD/JPY & XAU/USD</div>
       </div>
     );
@@ -642,10 +852,10 @@ export default function App() {
       {/* ===== Header ===== */}
       <div style={{ background: "linear-gradient(135deg,#1a1a2e,#16213e)", padding: "14px 14px 10px", borderBottom: "2px solid #e94560" }}>
         {/* Symbol Buttons */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginBottom: 10 }}>
           {Object.entries(SYMBOLS).map(([k, v]) => (
             <button key={k} onClick={() => setSymbol(k)} style={{
-              flex: 1, padding: "10px 0", borderRadius: 10, border: symbol === k ? "2px solid #e94560" : "2px solid transparent",
+              padding: "10px 0", borderRadius: 10, border: symbol === k ? "2px solid #e94560" : "2px solid transparent",
               fontWeight: 800, fontSize: 14, cursor: "pointer", transition: "all 0.2s",
               background: symbol === k ? "linear-gradient(135deg,#e94560,#c0392b)" : "#2a2a4a", color: symbol === k ? "#fff" : "#aaa",
             }}>{v.name}</button>
@@ -667,19 +877,19 @@ export default function App() {
             </div>
             <div style={{ fontSize: 10, color: "#555", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
               {liveSource ? (
-                <><span style={{ color: "#2ecc71" }}>LIVE</span> via {liveSource}</>
+                <><span style={{ color: "#2ecc71" }}>リアルタイム</span> : {liveSource}</>
               ) : (
-                <span style={{ color: "#f39c12" }}>Offline (cached data)</span>
+                <span style={{ color: "#f39c12" }}>オフライン（保存データ）</span>
               )}
               <button onClick={() => doFetch(false)} disabled={refreshing} style={{
                 background: "none", border: "1px solid #555", borderRadius: 4, color: refreshing ? "#444" : "#888", fontSize: 9,
                 padding: "1px 6px", cursor: refreshing ? "default" : "pointer",
-              }}>{refreshing ? "..." : "Refresh"}</button>
+              }}>{refreshing ? "..." : "更新"}</button>
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 11, color: "#888", marginBottom: 2 }}>
-              {tfLabel} Signal
+              {tfLabel} シグナル
             </div>
             <div style={{
               display: "inline-block", padding: "4px 14px", borderRadius: 20, fontSize: 13, fontWeight: 800,
@@ -707,7 +917,7 @@ export default function App() {
 
       {/* ===== Multi-Timeframe Overview ===== */}
       <div style={{ padding: "8px 12px" }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#888", marginBottom: 6 }}>Multi-Timeframe Overview</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#888", marginBottom: 6 }}>マルチタイムフレーム概況</div>
         <div style={{ display: "flex", gap: 4 }}>
           {TIMEFRAMES.map(t => {
             const mtf = mtfSignals[t.id];
@@ -735,7 +945,7 @@ export default function App() {
       {/* ===== Signal Summary ===== */}
       <div style={{ padding: "8px 12px 24px" }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: "#fff", display: "flex", alignItems: "center", gap: 8 }}>
-          <span>{tfLabel} Signals</span>
+          <span>{tfLabel} シグナル</span>
           <span style={{ fontSize: 11, padding: "2px 10px", borderRadius: 12, fontWeight: 700, background: sigBg, color: sigColor, border: `1px solid ${sigColor}` }}>
             {overall} ({bc}/{total})
           </span>
@@ -749,6 +959,50 @@ export default function App() {
           ))}
         </div>
       </div>
+
+      {/* ===== Backtest ===== */}
+      {backtest && (
+        <div style={{ padding: "0 12px 14px" }}>
+          <div style={{ background: "#131f34", borderRadius: 10, padding: "10px 12px", border: "1px solid #2b3f62" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "#9cc2ff" }}>実戦想定バックテスト（ロング/ショート + コスト）</div>
+            <div style={{ fontSize: 10, color: "#88a", marginBottom: 8 }}>
+              コスト: 手数料 { (backtest.costs.feeRate * 100).toFixed(2)}% / スプレッド { (backtest.costs.spreadRate * 100).toFixed(2)}% / スリッページ { (backtest.costs.slippageRate * 100).toFixed(2)}%
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, fontSize: 11, marginBottom: 8 }}>
+              <div>総取引: <b>{backtest.overall.trades}</b></div>
+              <div>勝率: <b>{backtest.overall.winRate.toFixed(1)}%</b></div>
+              <div>総損益: <b>{backtest.overall.totalReturn.toFixed(1)}%</b></div>
+              <div>PF: <b>{backtest.overall.pf.toFixed(2)}</b></div>
+              <div>Sharpe: <b>{backtest.overall.sharpe.toFixed(2)}</b></div>
+              <div>MAR: <b>{backtest.overall.mar.toFixed(2)}</b></div>
+              <div>最大DD: <b>{backtest.overall.maxDD.toFixed(1)}%</b></div>
+              <div>勝ち: <b>{backtest.overall.wins}</b></div>
+              <div>負け: <b>{backtest.overall.losses}</b></div>
+            </div>
+            <div style={{ fontSize: 11, color: "#c9d6ff", marginBottom: 6 }}>学習/検証 分割（70/30）</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 10, marginBottom: 8 }}>
+              <div style={{ background: "#0f1a2c", borderRadius: 8, padding: "6px 8px" }}>学習: 勝率 {backtest.train.winRate.toFixed(1)}% / PF {backtest.train.pf.toFixed(2)} / Sharpe {backtest.train.sharpe.toFixed(2)}</div>
+              <div style={{ background: "#0f1a2c", borderRadius: 8, padding: "6px 8px" }}>検証: 勝率 {backtest.test.winRate.toFixed(1)}% / PF {backtest.test.pf.toFixed(2)} / Sharpe {backtest.test.sharpe.toFixed(2)}</div>
+            </div>
+            <div style={{ fontSize: 11, color: "#c9d6ff", marginBottom: 6 }}>相場局面ごとの再現性</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, fontSize: 10, marginBottom: 8 }}>
+              {Object.entries(backtest.regime).map(([k, v]) => (
+                <div key={k} style={{ background: "#0f1a2c", borderRadius: 8, padding: "6px 8px" }}>
+                  {k}: 勝率 {v.winRate.toFixed(1)}% / PF {v.pf.toFixed(2)}
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "#c9d6ff", marginBottom: 6 }}>複数銘柄での再現性（D足）</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 10 }}>
+              {Object.entries(multiSymbolBacktest).map(([k, v]) => (
+                <div key={k} style={{ background: "#0f1a2c", borderRadius: 8, padding: "6px 8px" }}>
+                  {SYMBOLS[k].name}: 勝率 {v?.overall?.winRate?.toFixed(1) ?? "0.0"}% / PF {v?.overall?.pf?.toFixed(2) ?? "0.00"} / MAR {v?.overall?.mar?.toFixed(2) ?? "0.00"}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ===== Key Levels ===== */}
       {tf !== "1d" && (
@@ -768,7 +1022,7 @@ export default function App() {
 
       {/* Footer */}
       <div style={{ textAlign: "center", padding: "10px", color: "#444", fontSize: 10, borderTop: "1px solid #1a1a2e" }}>
-        This is for reference only, not investment advice.
+        参考情報であり、投資助言ではありません。
         <span> | H: {dayHigh.toFixed(decimals)} L: {dayLow.toFixed(decimals)}</span>
       </div>
     </div>
