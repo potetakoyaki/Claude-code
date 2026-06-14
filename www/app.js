@@ -662,6 +662,175 @@
   }
 
   // ===================================================================
+  // ブレインダンプ（端末内で文章をタスクに自動分解。外部送信なし・無料）
+  // ===================================================================
+  let bulkParsed = [];
+
+  function parseBrainDump(text) {
+    const pieces = text
+      .split(/[\n\r]+/)
+      .flatMap((line) => line.replace(/^\s*(?:[-*・>＞]+\s*|[0-9０-９]{1,2}[.)）、]\s*)/, '').split(/[、,，;；。]+/))
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return pieces.map(parsePiece).filter((t) => t.title);
+  }
+
+  function parsePiece(piece) {
+    const now = new Date();
+    let title = piece;
+    let due = null;
+    let priority = 'mid';
+    let category = '';
+    let m;
+
+    // カテゴリ: #タグ / 【タグ】
+    if ((m = title.match(/[#＃]([^\s#＃]+)/))) { category = m[1]; title = title.replace(m[0], '').trim(); }
+    if ((m = title.match(/[【\[]([^】\]]+)[】\]]/))) { category = category || m[1]; title = title.replace(m[0], '').trim(); }
+
+    // 優先度
+    if (/(至急|緊急|大至急|今すぐ|すぐに|急ぎ|急いで|重要|必ず|マスト|urgent|asap)/i.test(title)) priority = 'high';
+    else if (/(いつか|そのうち|暇な|余裕がある|時間がある時|someday|later)/i.test(title)) priority = 'low';
+
+    // 時刻
+    let hour = null, minute = 0;
+    if ((m = title.match(/(午前|午後|朝|夜|夕方)?\s*(\d{1,2})\s*[:：]\s*(\d{2})/))) {
+      hour = +m[2]; minute = +m[3];
+      if ((m[1] === '午後' || m[1] === '夜' || m[1] === '夕方') && hour < 12) hour += 12;
+    } else if ((m = title.match(/(午前|午後|朝|夜|夕方)?\s*(\d{1,2})\s*時(?:\s*(\d{1,2})\s*分)?/))) {
+      hour = +m[2]; minute = m[3] ? +m[3] : 0;
+      if ((m[1] === '午後' || m[1] === '夜' || m[1] === '夕方') && hour < 12) hour += 12;
+    }
+
+    const addDays = (n) => { const x = new Date(now); x.setDate(x.getDate() + n); return x; };
+    const setDue = (d) => {
+      const x = new Date(d);
+      if (hour != null) x.setHours(hour, minute, 0, 0);
+      else x.setHours(23, 59, 0, 0);
+      due = x.toISOString();
+    };
+
+    let matched = false;
+    if (/(今日|本日|きょう)/.test(title)) { setDue(now); matched = true; }
+    else if (/(明後日|あさって)/.test(title)) { setDue(addDays(2)); matched = true; }
+    else if (/明々後日/.test(title)) { setDue(addDays(3)); matched = true; }
+    else if (/(明日|あした|あす)/.test(title)) { setDue(addDays(1)); matched = true; }
+    else if (/今週末/.test(title)) { setDue(addDays((6 - now.getDay() + 7) % 7)); matched = true; }
+    else if (/来週/.test(title)) { setDue(addDays(7)); matched = true; }
+    else if (/今週/.test(title)) { setDue(addDays((6 - now.getDay() + 7) % 7)); matched = true; }
+    else if ((m = title.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日/))) {
+      const d = new Date(now.getFullYear(), +m[1] - 1, +m[2]);
+      if (d < startOfDay(now)) d.setFullYear(d.getFullYear() + 1);
+      setDue(d); matched = true;
+    } else if ((m = title.match(/(\d{1,2})\s*[/\-]\s*(\d{1,2})/))) {
+      const d = new Date(now.getFullYear(), +m[1] - 1, +m[2]);
+      if (d < startOfDay(now)) d.setFullYear(d.getFullYear() + 1);
+      setDue(d); matched = true;
+    } else if ((m = title.match(/(\d{1,2})\s*日後/))) {
+      setDue(addDays(+m[1])); matched = true;
+    } else if ((m = title.match(/(\d{1,2})\s*日まで/))) {
+      const d = new Date(now.getFullYear(), now.getMonth(), +m[1]);
+      if (d < startOfDay(now)) d.setMonth(d.getMonth() + 1);
+      setDue(d); matched = true;
+    } else {
+      const wd = { 日: 0, 月: 1, 火: 2, 水: 3, 木: 4, 金: 5, 土: 6 };
+      if ((m = title.match(/([日月火水木金土])曜/))) {
+        let diff = (wd[m[1]] - now.getDay() + 7) % 7;
+        if (diff === 0) diff = 7;
+        setDue(addDays(diff)); matched = true;
+      }
+    }
+    // 時刻だけ指定された場合は当日（過ぎていれば翌日）
+    if (!matched && hour != null) {
+      const d = new Date(now);
+      if (d.getHours() > hour || (d.getHours() === hour && d.getMinutes() >= minute)) d.setDate(d.getDate() + 1);
+      setDue(d);
+    }
+
+    // 期限を表す語をタイトルから取り除いて読みやすくする
+    title = title.replace(/(今日|本日|きょう|明後日|あさって|明々後日|明日|あした|あす|今週末|来週|今週|\d{1,2}\s*月\s*\d{1,2}\s*日|\d{1,2}\s*[/\-]\s*\d{1,2}|\d{1,2}\s*日後|\d{1,2}\s*日まで|[日月火水木金土]曜日?|午前|午後|\d{1,2}\s*時(?:\s*\d{1,2}\s*分)?|\d{1,2}\s*[:：]\s*\d{2}|までに|まで|期限)/g, '');
+    title = title.replace(/\s{2,}/g, ' ').replace(/^[\s、,]+|[\s、,]+$/g, '').trim();
+
+    return { title, due, priority, category };
+  }
+
+  function addManyTasks(items) {
+    items.forEach((d) => {
+      tasks.push({
+        id: uid(),
+        title: d.title,
+        notes: '',
+        due: d.due || null,
+        priority: d.priority || 'mid',
+        category: (d.category || '').trim(),
+        subtasks: [],
+        done: false,
+        createdAt: Date.now(),
+        completedAt: null,
+      });
+    });
+    saveTasks();
+    render();
+  }
+
+  function openBulk() {
+    $('bulkInput').value = '';
+    $('bulkPreview').classList.add('hidden');
+    $('bulkPreviewList').innerHTML = '';
+    bulkParsed = [];
+    $('bulkModal').classList.remove('hidden');
+    $('bulkInput').focus();
+  }
+  function closeBulk() { $('bulkModal').classList.add('hidden'); }
+
+  $('bulkBtn').addEventListener('click', openBulk);
+  document.querySelectorAll('[data-close-bulk]').forEach((el) => el.addEventListener('click', closeBulk));
+
+  $('bulkParseBtn').addEventListener('click', () => {
+    bulkParsed = parseBrainDump($('bulkInput').value);
+    const list = $('bulkPreviewList');
+    list.innerHTML = '';
+    if (bulkParsed.length === 0) {
+      list.innerHTML = '<div class="bulk-empty">区切れる文章が見つかりませんでした。改行や読点で区切ってみてください。</div>';
+      $('bulkPreview').classList.remove('hidden');
+      return;
+    }
+    bulkParsed.forEach((t, i) => {
+      const row = document.createElement('label');
+      row.className = 'bulk-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.dataset.idx = String(i);
+      const main = document.createElement('div');
+      main.className = 'bulk-row-main';
+      const title = document.createElement('div');
+      title.className = 'bulk-row-title';
+      title.textContent = t.title;
+      main.appendChild(title);
+      const badges = document.createElement('div');
+      badges.className = 'task-badges';
+      if (t.due) {
+        const b = document.createElement('span'); b.className = 'badge due'; b.textContent = '⏰ ' + formatDue(t.due); badges.appendChild(b);
+      }
+      if (t.priority === 'high') { const b = document.createElement('span'); b.className = 'badge pri-high'; b.textContent = '優先度:高'; badges.appendChild(b); }
+      if (t.category) { const b = document.createElement('span'); b.className = 'badge cat'; b.textContent = t.category; badges.appendChild(b); }
+      if (badges.children.length) main.appendChild(badges);
+      row.append(cb, main);
+      list.appendChild(row);
+    });
+    $('bulkPreview').classList.remove('hidden');
+  });
+
+  $('bulkAddBtn').addEventListener('click', () => {
+    const checked = [...$('bulkPreviewList').querySelectorAll('input[type=checkbox]:checked')]
+      .map((cb) => bulkParsed[+cb.dataset.idx])
+      .filter(Boolean);
+    if (checked.length === 0) { closeBulk(); return; }
+    addManyTasks(checked);
+    closeBulk();
+  });
+
+  // ===================================================================
   // 起動
   // ===================================================================
   async function init() {

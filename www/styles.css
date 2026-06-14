@@ -276,6 +276,27 @@ body {
 .modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .modal-actions .spacer { flex: 1; }
 
+/* ===== ブレインダンプ ===== */
+.bulk-btn { margin-bottom: 10px; text-align: center; }
+.bulk-hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.bulk-hint strong { color: var(--text); }
+#bulkInput {
+  width: 100%;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 9px; padding: 12px; font-size: 15px; font-family: inherit; line-height: 1.6;
+}
+#bulkInput:focus { outline: none; border-color: var(--primary); }
+.bulk-preview { border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.bulk-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px; cursor: pointer;
+}
+.bulk-row input[type=checkbox] { width: 20px; height: 20px; margin-top: 1px; accent-color: var(--ok); flex-shrink: 0; }
+.bulk-row-main { flex: 1; min-width: 0; }
+.bulk-row-title { font-size: 15px; word-break: break-word; }
+.bulk-empty { font-size: 14px; color: var(--muted); padding: 8px 0; }
+
 @media (max-width: 420px) {
   .detail-panel { grid-template-columns: 1fr; }
 }

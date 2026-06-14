@@ -74,6 +74,9 @@
       </label>
     </div>
 
+    <!-- ブレインダンプ（まとめて入力→自動でタスク化） -->
+    <button id="bulkBtn" class="btn ghost full bulk-btn">🧠 ブレインダンプ（まとめて書いて自動でタスク化）</button>
+
     <!-- タブ -->
     <nav class="tabs">
       <button class="tab active" data-view="today">今日 <span class="count" id="cntToday"></span></button>
@@ -161,6 +164,31 @@
         <span class="spacer"></span>
         <button id="cancelEditBtn" class="btn ghost" data-close-modal>キャンセル</button>
         <button id="saveEditBtn" class="btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ブレインダンプ モーダル -->
+  <div id="bulkModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-bulk></div>
+    <div class="modal-body">
+      <h2>🧠 ブレインダンプ</h2>
+      <p class="bulk-hint">頭の中のやることを、思いつくまま書いてください。改行・読点（、）・「・」で区切ると、1件ずつのタスクに自動で分けます。<br>
+      「明日」「来週」「6/20」「金曜」「15時」などの言葉は<strong>期限</strong>に、「至急・重要」は<strong>優先度・高</strong>に、「#仕事」「【私生活】」は<strong>カテゴリ</strong>に変換します。すべて端末内で処理し、外部には送信しません。</p>
+      <textarea id="bulkInput" rows="6" placeholder="例:&#10;明日までに請求書を送る #仕事&#10;来週 プレゼン資料づくり&#10;牛乳を買う&#10;至急 部長に折り返し電話 15時まで"></textarea>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="bulkParseBtn" class="btn primary">変換してプレビュー</button>
+      </div>
+
+      <div id="bulkPreview" class="bulk-preview hidden">
+        <div class="subtasks-head">プレビュー（チェックしたものを追加します）</div>
+        <div id="bulkPreviewList"></div>
+        <div class="modal-actions">
+          <button class="btn ghost" data-close-bulk>キャンセル</button>
+          <span class="spacer"></span>
+          <button id="bulkAddBtn" class="btn primary">追加する</button>
+        </div>
       </div>
     </div>
   </div>
