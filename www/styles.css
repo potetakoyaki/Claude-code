@@ -296,6 +296,14 @@ body {
 .bulk-row-main { flex: 1; min-width: 0; }
 .bulk-row-title { font-size: 15px; word-break: break-word; }
 .bulk-empty { font-size: 14px; color: var(--muted); padding: 8px 0; }
+.bulk-status { font-size: 13px; color: var(--muted); min-height: 18px; }
+.bulk-status.error { color: var(--high); }
+.sheet-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.sheet-field input {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 9px; padding: 11px; font-size: 15px; font-family: inherit;
+}
+.sheet-field input:focus { outline: none; border-color: var(--primary); }
 
 @media (max-width: 420px) {
   .detail-panel { grid-template-columns: 1fr; }

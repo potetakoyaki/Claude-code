@@ -6,6 +6,7 @@
 
   const STORE_KEY = 'yarukoto.tasks.v1';
   const PREF_KEY = 'yarukoto.prefs.v1';
+  const APIKEY_KEY = 'yarukoto.apiKey.v1';
   const $ = (id) => document.getElementById(id);
 
   // ---- 状態 ----
@@ -493,7 +494,11 @@
   // ===================================================================
   // メニューシート
   // ===================================================================
-  function openSheet() { $('sortSelect').value = prefs.sort; $('sheet').classList.remove('hidden'); }
+  function openSheet() {
+    $('sortSelect').value = prefs.sort;
+    $('apiKeyInput').value = localStorage.getItem(APIKEY_KEY) || '';
+    $('sheet').classList.remove('hidden');
+  }
   function closeSheet() { $('sheet').classList.add('hidden'); }
   $('menuBtn').addEventListener('click', openSheet);
   document.querySelectorAll('[data-close-sheet]').forEach((el) => el.addEventListener('click', closeSheet));
@@ -502,6 +507,13 @@
     prefs.sort = $('sortSelect').value;
     savePrefs();
     render();
+  });
+
+  $('saveKeyBtn').addEventListener('click', () => {
+    const v = $('apiKeyInput').value.trim();
+    if (v) localStorage.setItem(APIKEY_KEY, v);
+    else localStorage.removeItem(APIKEY_KEY);
+    alert(v ? 'APIキーを保存しました。ブレインダンプの「✨ AIで整理」が使えます。' : 'APIキーを削除しました。');
   });
 
   $('clearDoneBtn').addEventListener('click', () => {
@@ -776,6 +788,7 @@
     $('bulkInput').value = '';
     $('bulkPreview').classList.add('hidden');
     $('bulkPreviewList').innerHTML = '';
+    setBulkStatus('');
     bulkParsed = [];
     $('bulkModal').classList.remove('hidden');
     $('bulkInput').focus();
@@ -785,12 +798,23 @@
   $('bulkBtn').addEventListener('click', openBulk);
   document.querySelectorAll('[data-close-bulk]').forEach((el) => el.addEventListener('click', closeBulk));
 
+  function setBulkStatus(msg, isError) {
+    const el = $('bulkStatus');
+    el.textContent = msg || '';
+    el.classList.toggle('error', !!isError);
+  }
+
   $('bulkParseBtn').addEventListener('click', () => {
+    setBulkStatus('');
     bulkParsed = parseBrainDump($('bulkInput').value);
+    renderBulkPreview();
+  });
+
+  function renderBulkPreview() {
     const list = $('bulkPreviewList');
     list.innerHTML = '';
     if (bulkParsed.length === 0) {
-      list.innerHTML = '<div class="bulk-empty">区切れる文章が見つかりませんでした。改行や読点で区切ってみてください。</div>';
+      list.innerHTML = '<div class="bulk-empty">タスクが見つかりませんでした。改行や読点で区切ってみてください。</div>';
       $('bulkPreview').classList.remove('hidden');
       return;
     }
@@ -819,6 +843,92 @@
       list.appendChild(row);
     });
     $('bulkPreview').classList.remove('hidden');
+  }
+
+  // ✨ AIで整理（Anthropic Haiku 4.5・任意。APIキーは端末内にのみ保存）
+  async function aiParse(text) {
+    const key = (localStorage.getItem(APIKEY_KEY) || '').trim();
+    if (!key) throw new Error('NO_KEY');
+    const now = new Date();
+    const wk = ['日', '月', '火', '水', '木', '金', '土'][now.getDay()];
+    const system = `あなたは優秀なタスク抽出アシスタントです。ユーザーが渡す文章（メモやAIの回答など）から「やること（タスク）」だけを抜き出し、add_tasks ツールで返してください。`
+      + `今日は ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日(${wk}) ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')} です。`
+      + `「明日」「来週」「金曜」「15時まで」などの相対的な表現は、この日時を基準に絶対日時(ISO8601, 例 2026-06-15T23:59:00)へ変換してください。時刻指定がなければ 23:59 とします。`
+      + `期限が読み取れないタスクは due を null に。緊急・重要そうなら priority を high、後回しでよさそうなら low、それ以外は mid。`
+      + `内容から分かれば category に短い分類語（例: 仕事 / 私生活 / 買い物）、不明なら空文字。タスクでない説明文や挨拶は含めないでください。`;
+    const schema = {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'タスクの内容（簡潔に）' },
+              due: { type: ['string', 'null'], description: '期限(ISO8601)。なければ null' },
+              priority: { type: 'string', enum: ['high', 'mid', 'low'] },
+              category: { type: 'string', description: '分類。なければ空文字' },
+            },
+            required: ['title', 'priority'],
+          },
+        },
+      },
+      required: ['tasks'],
+    };
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 1024,
+        system,
+        tools: [{ name: 'add_tasks', description: '抽出したタスク一覧を登録する', input_schema: schema }],
+        tool_choice: { type: 'tool', name: 'add_tasks' },
+        messages: [{ role: 'user', content: text }],
+      }),
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.json())?.error?.message || ''; } catch { /* noop */ }
+      if (res.status === 401) throw new Error('APIキーが正しくないようです。メニューで確認してください。');
+      if (res.status === 429) throw new Error('レート上限または残高不足の可能性があります。');
+      throw new Error(`APIエラー (${res.status}) ${detail}`.trim());
+    }
+    const data = await res.json();
+    const block = (data.content || []).find((b) => b.type === 'tool_use' && b.name === 'add_tasks');
+    const arr = block?.input?.tasks || [];
+    return arr.map((t) => ({
+      title: (t.title || '').trim(),
+      due: t.due ? new Date(t.due).toISOString() : null,
+      priority: ['high', 'mid', 'low'].includes(t.priority) ? t.priority : 'mid',
+      category: (t.category || '').trim(),
+    })).filter((t) => t.title);
+  }
+
+  $('bulkAiBtn').addEventListener('click', async () => {
+    const text = $('bulkInput').value.trim();
+    if (!text) { setBulkStatus('先に文章を入力してください。'); return; }
+    if (!(localStorage.getItem(APIKEY_KEY) || '').trim()) {
+      setBulkStatus('AI整理にはAPIキーが必要です。メニュー（右上⋯）で設定してください。', true);
+      return;
+    }
+    const btn = $('bulkAiBtn');
+    btn.disabled = true;
+    setBulkStatus('AIで整理中…');
+    try {
+      bulkParsed = await aiParse(text);
+      renderBulkPreview();
+      setBulkStatus(bulkParsed.length ? `${bulkParsed.length}件を抽出しました（AI）` : 'タスクは見つかりませんでした。');
+    } catch (e) {
+      setBulkStatus('エラー: ' + (e && e.message ? e.message : e), true);
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   $('bulkAddBtn').addEventListener('click', () => {

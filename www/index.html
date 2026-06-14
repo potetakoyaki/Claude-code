@@ -119,6 +119,15 @@
         </select>
       </label>
       <p class="sheet-note">データはこの端末のブラウザ内にだけ保存されます。サーバーには送信されません。</p>
+
+      <div class="sheet-divider"></div>
+      <label class="sheet-field">
+        <span>Anthropic APIキー（AI整理用・任意）</span>
+        <input id="apiKeyInput" type="password" placeholder="sk-ant-..." autocomplete="off" />
+      </label>
+      <button id="saveKeyBtn" class="sheet-item">🔑 APIキーを保存</button>
+      <p class="sheet-note">キーはこの端末内にだけ保存され、整理する瞬間だけ直接Anthropicに送られます。AI整理にはごく少額のAPI料金がかかります（Haikuで1回およそ0.6円）。空にして保存すると削除されます。</p>
+
       <button class="btn ghost full" data-close-sheet>閉じる</button>
     </div>
   </div>
@@ -177,9 +186,11 @@
       「明日」「来週」「6/20」「金曜」「15時」などの言葉は<strong>期限</strong>に、「至急・重要」は<strong>優先度・高</strong>に、「#仕事」「【私生活】」は<strong>カテゴリ</strong>に変換します。すべて端末内で処理し、外部には送信しません。</p>
       <textarea id="bulkInput" rows="6" placeholder="例:&#10;明日までに請求書を送る #仕事&#10;来週 プレゼン資料づくり&#10;牛乳を買う&#10;至急 部長に折り返し電話 15時まで"></textarea>
       <div class="modal-actions">
+        <button id="bulkAiBtn" class="btn ghost">✨ AIで整理</button>
         <span class="spacer"></span>
         <button id="bulkParseBtn" class="btn primary">変換してプレビュー</button>
       </div>
+      <div id="bulkStatus" class="bulk-status"></div>
 
       <div id="bulkPreview" class="bulk-preview hidden">
         <div class="subtasks-head">プレビュー（チェックしたものを追加します）</div>
