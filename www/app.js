@@ -12,7 +12,12 @@
   let tasks = load(STORE_KEY, []);
   let prefs = load(PREF_KEY, { sort: 'smart', view: 'today', category: null, bannerDismissed: false });
   let editingId = null;
-  const notified = new Set(); // この起動中に通知済みのタスクID
+  const notified = new Set(); // この起動中に通知済みのタスクID（Web用）
+
+  // Capacitor（Androidアプリ）として動作しているか
+  const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  const LN = window.Capacitor?.Plugins?.LocalNotifications || null;
+  let nativeGranted = false;
 
   // ===================================================================
   // ストレージ
@@ -25,7 +30,10 @@
       return fallback;
     }
   }
-  function saveTasks() { localStorage.setItem(STORE_KEY, JSON.stringify(tasks)); }
+  function saveTasks() {
+    localStorage.setItem(STORE_KEY, JSON.stringify(tasks));
+    if (isNative) rescheduleNative();
+  }
   function savePrefs() { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -542,27 +550,47 @@
   });
 
   // ===================================================================
-  // 通知
+  // 通知（Android＝OSのローカル通知 / ブラウザ＝Web Notification）
   // ===================================================================
+  function notifyGranted() {
+    if (isNative) return nativeGranted;
+    return ('Notification' in window) && Notification.permission === 'granted';
+  }
+
   function renderNotifyUI() {
     const banner = $('notifyBanner');
+    const btn = $('notifyBtn');
+    if (isNative) {
+      banner.classList.toggle('hidden', nativeGranted || prefs.bannerDismissed);
+      btn.textContent = nativeGranted ? '🔔' : '🔕';
+      btn.title = nativeGranted ? '通知はオンです' : '通知はオフです（タップでオン）';
+      return;
+    }
     const supported = 'Notification' in window;
     const needAsk = supported && Notification.permission === 'default' && !prefs.bannerDismissed;
     banner.classList.toggle('hidden', !needAsk);
-    const btn = $('notifyBtn');
     if (!supported) { btn.textContent = '🔕'; btn.title = 'この環境では通知に対応していません'; }
     else if (Notification.permission === 'granted') { btn.textContent = '🔔'; btn.title = '通知はオンです'; }
     else { btn.textContent = '🔕'; btn.title = '通知はオフです（タップでオン）'; }
   }
 
   async function requestNotify() {
+    if (isNative && LN) {
+      try {
+        const res = await LN.requestPermissions();
+        nativeGranted = res.display === 'granted';
+      } catch { nativeGranted = false; }
+      if (nativeGranted) await rescheduleNative();
+      render();
+      return;
+    }
     if (!('Notification' in window)) {
       alert('お使いのブラウザは通知に対応していません。');
       return;
     }
     const perm = await Notification.requestPermission();
     if (perm === 'granted') {
-      showNotification('通知をオンにしました', '期限が来たタスクをここでお知らせします。', 'welcome');
+      showWebNotification('通知をオンにしました', '期限が来たタスクをお知らせします。', 'welcome');
     }
     render();
   }
@@ -575,7 +603,8 @@
     renderNotifyUI();
   });
 
-  async function showNotification(title, body, tag) {
+  // ---- Web（ブラウザ）用: 開いている間に発火 ----
+  async function showWebNotification(title, body, tag) {
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     const opts = { body, tag, icon: 'icon.svg', badge: 'icon.svg', renotify: true };
     try {
@@ -587,35 +616,81 @@
     }
   }
 
-  // 期限が来たタスクをチェックして通知（アプリが開いている間）
   function checkDueTasks() {
+    if (isNative) return; // ネイティブはOSが予約通知を発火する
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     const now = Date.now();
     tasks.forEach((t) => {
       if (t.done || !t.due || notified.has(t.id)) return;
       if (new Date(t.due).getTime() <= now) {
         notified.add(t.id);
-        showNotification('⏰ ' + t.title, t.category ? `[${t.category}] そろそろ取りかかりましょう` : 'そろそろ取りかかりましょう', t.id);
+        showWebNotification('⏰ ' + t.title, t.category ? `[${t.category}] そろそろ取りかかりましょう` : 'そろそろ取りかかりましょう', t.id);
       }
     });
+  }
+
+  // ---- Android（Capacitor）用: 期限時刻にOS通知を予約 ----
+  function notifId(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+    return (Math.abs(h) % 2000000000) + 1; // 正の32bit整数
+  }
+
+  async function rescheduleNative() {
+    if (!isNative || !LN || !nativeGranted) return;
+    try {
+      // 既存の予約をいったん全て取り消してから貼り直す（ズレ防止・再起動後の復元）
+      const pending = await LN.getPending();
+      if (pending?.notifications?.length) {
+        await LN.cancel({ notifications: pending.notifications.map((n) => ({ id: n.id })) });
+      }
+      const now = Date.now();
+      const toSchedule = [];
+      tasks.forEach((t) => {
+        if (t.done || !t.due) return;
+        let at = new Date(t.due).getTime();
+        if (at <= now) at = now + 5000; // 期限切れは起動直後に軽くお知らせ
+        toSchedule.push({
+          id: notifId(t.id),
+          title: '⏰ ' + t.title,
+          body: t.category ? `[${t.category}] そろそろ取りかかりましょう` : 'そろそろ取りかかりましょう',
+          schedule: { at: new Date(at), allowWhileIdle: true },
+        });
+      });
+      if (toSchedule.length) await LN.schedule({ notifications: toSchedule });
+    } catch { /* noop */ }
   }
 
   // ===================================================================
   // 起動
   // ===================================================================
-  function init() {
-    // 詳細パネルの優先度デフォルト
+  async function init() {
     $('detailPriority').value = 'mid';
-    render();
 
-    // 通知チェック（30秒ごと＋復帰時）
+    if (isNative && LN) {
+      // Androidアプリ: 通知許可の状態を確認し、予約を貼り直す
+      try {
+        const perm = await LN.checkPermissions();
+        nativeGranted = perm.display === 'granted';
+      } catch { nativeGranted = false; }
+      render();
+      if (nativeGranted) {
+        await rescheduleNative();
+      } else {
+        await requestNotify(); // 初回は許可を求める
+      }
+      // 通知をタップして開いたら表示を最新化
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+      return;
+    }
+
+    // ブラウザ / PWA
+    render();
     checkDueTasks();
     setInterval(checkDueTasks, 30000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); checkDueTasks(); } });
-
-    // Service Worker 登録（オフライン対応 & 通知）
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').catch(() => { /* ローカルfile://では失敗するが無視 */ });
+      navigator.serviceWorker.register('sw.js').catch(() => { /* file:// では失敗するが無視 */ });
     }
   }
 
