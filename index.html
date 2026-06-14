@@ -2,21 +2,169 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#0f0f23" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f17" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="FX Analysis" />
-  <link rel="manifest" href="manifest.json" />
-  <title>FX Technical Analysis</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0f0f23; overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
-    html { -webkit-text-size-adjust: 100%; }
-  </style>
+  <meta name="apple-mobile-web-app-title" content="やること" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>やること — タスク管理</title>
 </head>
 <body>
-  <div id="root"></div>
-  <script type="module" src="/src/main.jsx"></script>
+  <div id="app">
+    <!-- ヘッダー -->
+    <header class="appbar">
+      <div class="appbar-title">
+        <span class="logo">✓</span>
+        <h1>やること</h1>
+      </div>
+      <div class="appbar-actions">
+        <button id="notifyBtn" class="icon-btn" title="通知の設定">🔔</button>
+        <button id="menuBtn" class="icon-btn" title="メニュー">⋯</button>
+      </div>
+    </header>
+
+    <!-- 通知バナー -->
+    <div id="notifyBanner" class="banner hidden">
+      <span>🔔 通知をオンにすると、期限が来たタスクをお知らせします。</span>
+      <button id="enableNotifyBtn" class="banner-btn">通知をオンにする</button>
+      <button id="dismissBannerBtn" class="banner-x" title="閉じる">✕</button>
+    </div>
+
+    <!-- フォーカスカード（今日やること） -->
+    <section id="focusCard" class="focus-card hidden">
+      <div class="focus-label">次にやる1件</div>
+      <div id="focusTitle" class="focus-title"></div>
+      <div id="focusMeta" class="focus-meta"></div>
+      <div class="focus-actions">
+        <button id="focusDoneBtn" class="btn primary">✓ できた！</button>
+        <button id="focusSkipBtn" class="btn ghost">後で</button>
+      </div>
+    </section>
+
+    <!-- クイック追加 -->
+    <form id="quickAdd" class="quick-add">
+      <input id="quickTitle" type="text" placeholder="やることを入力してEnterまたはBで追加…" autocomplete="off" />
+      <button id="quickAddBtn" type="submit" class="btn primary">＋</button>
+      <button id="detailToggle" type="button" class="btn ghost" title="詳細">⚙</button>
+    </form>
+
+    <!-- 詳細入力 -->
+    <div id="detailPanel" class="detail-panel hidden">
+      <label>期限
+        <input id="detailDue" type="datetime-local" />
+      </label>
+      <label>優先度
+        <select id="detailPriority">
+          <option value="low">低</option>
+          <option value="mid" selected>中</option>
+          <option value="high">高</option>
+        </select>
+      </label>
+      <label>カテゴリ／タグ
+        <input id="detailCategory" type="text" list="categoryList" placeholder="例: 仕事 / 私生活" />
+        <datalist id="categoryList"></datalist>
+      </label>
+      <label class="full">メモ
+        <textarea id="detailNotes" rows="2" placeholder="補足メモ…"></textarea>
+      </label>
+    </div>
+
+    <!-- タブ -->
+    <nav class="tabs">
+      <button class="tab active" data-view="today">今日 <span class="count" id="cntToday"></span></button>
+      <button class="tab" data-view="upcoming">予定 <span class="count" id="cntUpcoming"></span></button>
+      <button class="tab" data-view="all">すべて <span class="count" id="cntAll"></span></button>
+      <button class="tab" data-view="done">完了 <span class="count" id="cntDone"></span></button>
+    </nav>
+
+    <!-- フィルター -->
+    <div id="filterBar" class="filter-bar"></div>
+
+    <!-- タスク一覧 -->
+    <main id="taskList" class="task-list"></main>
+
+    <!-- 空状態 -->
+    <div id="emptyState" class="empty hidden"></div>
+
+    <footer class="foot">
+      <span id="footStat"></span>
+    </footer>
+  </div>
+
+  <!-- メニューシート -->
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet-backdrop" data-close-sheet></div>
+    <div class="sheet-body">
+      <h2>メニュー</h2>
+      <button id="exportBtn" class="sheet-item">📤 バックアップを書き出す（JSON）</button>
+      <button id="importBtn" class="sheet-item">📥 バックアップを読み込む</button>
+      <input id="importFile" type="file" accept="application/json,.json" hidden />
+      <button id="clearDoneBtn" class="sheet-item">🧹 完了タスクをまとめて削除</button>
+      <div class="sheet-divider"></div>
+      <label class="sheet-toggle">
+        <span>並び替え</span>
+        <select id="sortSelect">
+          <option value="smart">おすすめ順（期限＋優先度）</option>
+          <option value="due">期限が近い順</option>
+          <option value="priority">優先度が高い順</option>
+          <option value="created">追加した順</option>
+        </select>
+      </label>
+      <p class="sheet-note">データはこの端末のブラウザ内にだけ保存されます。サーバーには送信されません。</p>
+      <button class="btn ghost full" data-close-sheet>閉じる</button>
+    </div>
+  </div>
+
+  <!-- 編集モーダル -->
+  <div id="editModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-body">
+      <h2>タスクを編集</h2>
+      <label class="full">タイトル
+        <input id="editTitle" type="text" />
+      </label>
+      <div class="row">
+        <label>期限
+          <input id="editDue" type="datetime-local" />
+        </label>
+        <label>優先度
+          <select id="editPriority">
+            <option value="low">低</option>
+            <option value="mid">中</option>
+            <option value="high">高</option>
+          </select>
+        </label>
+      </div>
+      <label class="full">カテゴリ／タグ
+        <input id="editCategory" type="text" list="categoryList" />
+      </label>
+      <label class="full">メモ
+        <textarea id="editNotes" rows="3"></textarea>
+      </label>
+
+      <div class="subtasks">
+        <div class="subtasks-head">サブタスク</div>
+        <div id="subtaskList"></div>
+        <form id="subtaskAdd" class="subtask-add">
+          <input id="subtaskInput" type="text" placeholder="サブタスクを追加…" />
+          <button type="submit" class="btn ghost">＋</button>
+        </form>
+      </div>
+
+      <div class="modal-actions">
+        <button id="deleteTaskBtn" class="btn danger">削除</button>
+        <span class="spacer"></span>
+        <button id="cancelEditBtn" class="btn ghost" data-close-modal>キャンセル</button>
+        <button id="saveEditBtn" class="btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
 </body>
 </html>

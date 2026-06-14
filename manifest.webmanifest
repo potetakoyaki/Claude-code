@@ -1,0 +1,20 @@
+{
+  "name": "やること — タスク管理",
+  "short_name": "やること",
+  "description": "考えるだけで終わらせない。通知付きのシンプルなタスク管理アプリ。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0f17",
+  "theme_color": "#0f0f17",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
