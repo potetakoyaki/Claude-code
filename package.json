@@ -1,27 +1,19 @@
 {
-  "name": "claude-code",
+  "name": "yarukoto",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "やること — 端末内で完結する通知付きタスク管理アプリ（Web + Android）",
+  "private": true,
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "cap:add": "cap add android",
+    "cap:sync": "cap sync android"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/potetakoyaki/Claude-code"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "recharts": "^3.7.0"
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/local-notifications": "^6.1.0",
+    "send-intent": "^6.0.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^5.1.4",
-    "vite": "^7.3.1"
+    "@capacitor/cli": "^6.1.2"
   }
 }
