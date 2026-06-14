@@ -35,6 +35,9 @@ jobs:
       - name: Sync web assets into Android project
         run: npx cap sync android
 
+      - name: Add share (ACTION_SEND) intent-filter to manifest
+        run: node scripts/patch-android-manifest.mjs
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon

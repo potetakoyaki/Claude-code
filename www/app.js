@@ -830,6 +830,39 @@
     closeBulk();
   });
 
+  function openBulkWithText(text) {
+    openBulk();
+    $('bulkInput').value = text;
+    $('bulkParseBtn').click();
+  }
+
+  // ===================================================================
+  // 共有（他アプリの「共有」→ やること）で受け取ったテキストをタスク化
+  // ===================================================================
+  function extractSharedText(result) {
+    if (!result) return '';
+    const parts = [];
+    if (result.title) parts.push(result.title);
+    if (result.text) parts.push(result.text);
+    if (result.url) {
+      try { parts.push(decodeURIComponent(result.url)); } catch { parts.push(result.url); }
+    }
+    return [...new Set(parts.map((p) => (p || '').trim()).filter(Boolean))].join('\n').trim();
+  }
+
+  async function handleSharedIntent() {
+    const SI = window.Capacitor?.Plugins?.SendIntent;
+    if (!isNative || !SI) return;
+    try {
+      const result = await SI.checkSendIntentReceived();
+      const text = extractSharedText(result);
+      if (text) openBulkWithText(text);
+    } catch { /* 共有起動でなければ何もしない */ }
+  }
+
+  // アプリが起動中に共有された場合
+  window.addEventListener('sendIntentReceived', handleSharedIntent);
+
   // ===================================================================
   // 起動
   // ===================================================================
@@ -848,8 +881,10 @@
       } else {
         await requestNotify(); // 初回は許可を求める
       }
-      // 通知をタップして開いたら表示を最新化
-      document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+      // 共有から起動された場合はテキストを取り込む
+      handleSharedIntent();
+      // 通知や共有で開き直したら最新化＆共有チェック
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); handleSharedIntent(); } });
       return;
     }
 
